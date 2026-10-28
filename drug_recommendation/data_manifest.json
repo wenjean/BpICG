@@ -1,0 +1,82 @@
+{
+  "algorithm": "sha256",
+  "files": [
+    {
+      "path": "data/controls/ctl_vehicle_default164_ctrl1.h5ad",
+      "size": 10491635703,
+      "sha256": "67337f956c10ba7924ef9219e5c58c54cefaf509a495274c3388053bb33cbcd1",
+      "source_name": "ctl_vehicle_default164_ctrl1.h5ad",
+      "processing": "byte-for-byte copy"
+    },
+    {
+      "path": "data/candidates/t001.csv",
+      "size": 15127728,
+      "sha256": "ceadd342522251b6443ca861120614a9413af3c04f9ec5a4dc279420ab05f816",
+      "source_name": "t001.csv",
+      "processing": "byte-for-byte copy"
+    },
+    {
+      "path": "data/gene_sets/melanoma_cancer_up_genes.txt",
+      "size": 4557,
+      "sha256": "c6940a7425935582ec94c881ae2ca3ec5007632988d758f4fa361fbe3d985252",
+      "source_name": "melanoma_cancer_up_genes.txt",
+      "processing": "byte-for-byte copy"
+    },
+    {
+      "path": "data/gene_sets/melanoma_cancer_down_genes.txt",
+      "size": 2878,
+      "sha256": "b7305dfd7c2ec7fb772dbb75134bd9b085e31f64a8342fd4ef2545180014a662",
+      "source_name": "melanoma_cancer_down_genes.txt",
+      "processing": "byte-for-byte copy"
+    },
+    {
+      "path": "data/priors/con_uce_chromo_full.csv",
+      "size": 21870084,
+      "sha256": "4eb4e3a6ac130f26f8063519bad10c64e0a8c54fcd24b001faa5a41ad58692d4",
+      "source_name": "con_uce_chromo_full.csv",
+      "processing": "byte-for-byte copy"
+    },
+    {
+      "path": "data/priors/con_uce_go_top21.csv",
+      "size": 7195377,
+      "sha256": "e38f2a08c46ace638859ae954892de1d858d226d4c5b61ca7b45d2e8c2c83abc",
+      "source_name": "con_uce_go_top21.csv",
+      "processing": "byte-for-byte copy"
+    },
+    {
+      "path": "data/priors/con_uce_kegg_full.csv",
+      "size": 249915,
+      "sha256": "6e56d0caf599af367e2a292d4c79d1c12f2c4af97b15c81ff6ddfc04f15f2a67",
+      "source_name": "con_uce_kegg_full.csv",
+      "processing": "byte-for-byte copy"
+    },
+    {
+      "path": "data/priors/con_uce_tftg_full.csv",
+      "size": 11631649,
+      "sha256": "e60461195854dbff7b2ff2c6a98f73c4e402bf94e1710f095e3fb3b2ba071792",
+      "source_name": "con_uce_tftg_full.csv",
+      "processing": "byte-for-byte copy"
+    },
+    {
+      "path": "data/priors/con_uce_gene2kegg.pkl",
+      "size": 29280,
+      "sha256": "4311968e2305a2313aa433739ef35651687fb26a3d2f96a2f238e38df45caa21",
+      "source_name": "con_uce_gene2kegg.pkl",
+      "processing": "byte-for-byte copy"
+    },
+    {
+      "path": "checkpoints/best_model_final_10uM_celltype_pair.pth",
+      "size": 679536479,
+      "sha256": "cd7f1cbbdb73c8912cec052e3ae6aa5605707f3617e9e1e9fe33d44744a0c54d",
+      "source_name": "best_model_final_10uM_celltype_pair.pth",
+      "processing": "Only five prior-path metadata values changed to relative paths; all model tensors verified equal; optimizer state and other metadata retained.",
+      "relative_prior_paths": {
+        "chromo_graph_path": "data/priors/con_uce_chromo_full.csv",
+        "go_graph_path": "data/priors/con_uce_go_top21.csv",
+        "kegg_graph_path": "data/priors/con_uce_kegg_full.csv",
+        "tftg_graph_path": "data/priors/con_uce_tftg_full.csv",
+        "kegg_gene2pathway_path": "data/priors/con_uce_gene2kegg.pkl"
+      }
+    }
+  ]
+}

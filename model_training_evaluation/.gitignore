@@ -1,0 +1,12 @@
+# Perturbation data planned for Zenodo; keep the complete local copy.
+/data/processed/10um_24h_mean_perturbation_varnames_gene.h5ad
+
+# Training outputs and local caches
+/results/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+.venv/
+*.log
+.DS_Store

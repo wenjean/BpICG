@@ -13,7 +13,6 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import r2_score, mean_squared_error
 from scipy.stats import pearsonr
 import numpy as n
-# 读取控制组和扰动组数据
 import sys
 import scanpy as sc
 import pickle
@@ -178,7 +177,6 @@ class PathwayPriorEncoder(nn.Module):
         ):
             return torch.zeros_like(x_expr)
 
-        # [B, G] -> [B, P], pathway activity is the mean expression of member genes.
         pathway_activity = torch.sparse.mm(
             self.gene_to_pathway,
             x_expr.transpose(0, 1)
@@ -201,7 +199,6 @@ class PathwayPriorEncoder(nn.Module):
         pathway_delta = self.pathway_delta(pathway_tokens).squeeze(-1)
         pathway_delta = pathway_delta * attn
 
-        # [B, P] -> [B, G], distribute drug-attended pathway deltas to genes.
         gene_delta_bias = torch.sparse.mm(
             self.pathway_to_gene,
             pathway_delta.transpose(0, 1)
@@ -231,7 +228,6 @@ class DrugPerturbationModel_embedding_v2(nn.Module):
     ):
         super().__init__()
 
-        # allow dynamic gene size to match dataset after filtering
         self.gene_size = gene_size
         self.uce_dim = uce_dim
         self.drug_dim = drug_dim
@@ -271,19 +267,12 @@ class DrugPerturbationModel_embedding_v2(nn.Module):
             self.pathway_encoder = None
             self.pathway_gate_logit = None
 
-        # ===============================
-        # Dose Encoder（重要升级）
-        # ===============================
         self.dose_encoder = nn.Sequential(
             nn.Linear(1, 64),
             nn.ReLU(),
             nn.Linear(64, self.drug_dim)
         )
 
-        # ===============================
-        # 输入融合（control + UCE）
-        # ===============================
-        # input dimension equals (uce_dim + gene_size)
         self.input_proj = nn.Sequential(
             nn.Linear(self.uce_dim + self.gene_size + graph_context_dim, self.hidden),
             nn.ReLU(),
@@ -292,11 +281,8 @@ class DrugPerturbationModel_embedding_v2(nn.Module):
             nn.Linear(self.hidden, self.hidden)
         )
 
-        # ===============================
-        # Multi-token Attention（核心升级）
-        # ===============================
         self.num_tokens = 8
-        self.token_dim = self.hidden // self.num_tokens  # 128
+        self.token_dim = self.hidden // self.num_tokens
 
         self.query_map = nn.Linear(self.token_dim, self.token_dim)
         self.key_map = nn.Linear(self.token_dim, self.token_dim)
@@ -304,9 +290,6 @@ class DrugPerturbationModel_embedding_v2(nn.Module):
 
         self.attn_dropout = nn.Dropout(self.dropout_rate)
 
-        # ===============================
-        # Fusion MLP
-        # ===============================
         self.fusion_decoder = nn.Sequential(
             nn.Linear(self.hidden, self.hidden),
             nn.ReLU(),
@@ -315,9 +298,6 @@ class DrugPerturbationModel_embedding_v2(nn.Module):
             nn.Linear(self.hidden, self.hidden)
         )
 
-        # ===============================
-        # Cell type head
-        # ===============================
         self.cell_type_head = nn.Sequential(
             nn.Linear(self.hidden, 256),
             nn.ReLU(),
@@ -325,9 +305,6 @@ class DrugPerturbationModel_embedding_v2(nn.Module):
             nn.Linear(256, self.num_cell_types)
         )
 
-        # ===============================
-        # Decoder（更深）
-        # ===============================
         self.decoder = nn.Sequential(
             nn.Linear(self.hidden, 2048),
             nn.ReLU(),
@@ -339,16 +316,9 @@ class DrugPerturbationModel_embedding_v2(nn.Module):
 
     def forward(self, x_pert, x_uce, drug_emb, drug_dose):
 
-        # ===============================
-        # Dose embedding（替代原乘法）
-        # ===============================
-        # drug_dose = drug_dose.unsqueeze(1)
         dose_emb = self.dose_encoder(drug_dose)
         drug_emb = drug_emb + dose_emb
 
-        # ===============================
-        # 输入融合
-        # ===============================
         x_expr = x_pert.squeeze(1)
         if self.use_bio_graph:
             graph_context = self.graph_encoder(x_expr)
@@ -357,17 +327,11 @@ class DrugPerturbationModel_embedding_v2(nn.Module):
             x = torch.cat((x_uce, x_expr), dim=1)
         x = self.input_proj(x)
 
-        # ===============================
-        # reshape成多token（关键）
-        # ===============================
         B = x.shape[0]
 
         x_tokens = x.view(B, self.num_tokens, self.token_dim)
         drug_tokens = drug_emb.view(B, self.num_tokens, self.token_dim)
 
-        # ===============================
-        # Cross Attention
-        # ===============================
         Q = self.query_map(x_tokens)
         K = self.key_map(drug_tokens)
         V = self.value_map(drug_tokens)
@@ -381,23 +345,12 @@ class DrugPerturbationModel_embedding_v2(nn.Module):
 
         fusion = torch.matmul(attn, V)
 
-        # flatten
         fusion = fusion.reshape(B, -1)
 
-        # ===============================
-        # Fusion MLP
-        # ===============================
         fusion = self.fusion_decoder(fusion)
 
-        # ===============================
-        # Cell type prediction
-        # ===============================
         cell_type_logits = self.cell_type_head(fusion)
 
-        # ===============================
-        # 拼接 + Decoder
-        # ===============================
-        # fusion2 = torch.cat((fusion, x_pert.squeeze(1)), dim=1)
 
         delta = self.decoder(fusion)
 
@@ -405,9 +358,6 @@ class DrugPerturbationModel_embedding_v2(nn.Module):
             pathway_delta_bias = self.pathway_encoder(x_expr, drug_emb)
             delta = delta + torch.sigmoid(self.pathway_gate_logit) * pathway_delta_bias
 
-        # ===============================
-        # Residual（非常关键）
-        # ===============================
         output = x_expr + delta
 
         return output, cell_type_logits, fusion

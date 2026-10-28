@@ -16,6 +16,8 @@ import os
 import argparse
 import warnings
 import pickle
+import sys
+from pathlib import Path
 
 from model import *
 from data_utils import *
@@ -23,13 +25,12 @@ from evo_loss import *
 
 warnings.filterwarnings("ignore")
 
+PROJECT_DIR = Path(__file__).resolve().parent
 
-# ===============================
-# 参数
-# ===============================
+
 parser = argparse.ArgumentParser()
 
-parser.add_argument("--run_name", type=str, default="final_10uM_celltype_pair")
+parser.add_argument("--run_name", type=str, default="multidose_0to100um_unseen_drug_seed{seed}")
 parser.add_argument("--drug_col", type=str, default="smiles")
 parser.add_argument("--seed", type=int, default=11)
 
@@ -40,6 +41,16 @@ parser.add_argument("--test_ratio", type=float, default=0.1)
 parser.add_argument("--epochs", type=int, default=50)
 parser.add_argument("--batch_size", type=int, default=256)
 parser.add_argument("--lr", type=float, default=1e-4)
+parser.add_argument(
+    "--preflight_only",
+    action="store_true",
+    help="Run preprocessing plus one forward/backward batch, then exit without full training",
+)
+parser.add_argument(
+    "--eval_only",
+    action="store_true",
+    help="Skip training and evaluate the existing best checkpoint",
+)
 parser.add_argument("--filter_low_var_perturb", action="store_true", default=True)
 parser.add_argument("--no_filter_low_var_perturb", action="store_false", dest="filter_low_var_perturb")
 parser.add_argument("--min_perturb_expr_var", type=float, default=1e-4)
@@ -56,59 +67,81 @@ parser.add_argument("--pathway_dim", type=int, default=128)
 parser.add_argument(
     "--kegg_graph_path",
     type=str,
-    default="/data/home/wenjian/药物扰动模型/宇峰师兄数据/先验知识图/con_uce_kegg_full.csv"
+    default="data/priors/con_uce_kegg_full.csv"
 )
 
 parser.add_argument(
     "--chromo_graph_path",
     type=str,
-    default="/data/home/wenjian/药物扰动模型/宇峰师兄数据/先验知识图/con_uce_chromo_full.csv"
+    default="data/priors/con_uce_chromo_full.csv"
 )
 
 parser.add_argument(
     "--go_graph_path",
     type=str,
-    default="/data/home/wenjian/药物扰动模型/宇峰师兄数据/先验知识图/con_uce_go_top21.csv"
+    default="data/priors/con_uce_go_top21.csv"
 )
 
 parser.add_argument(
     "--tftg_graph_path",
     type=str,
-    default="/data/home/wenjian/药物扰动模型/宇峰师兄数据/先验知识图/con_uce_tftg_full.csv"
+    default="data/priors/con_uce_tftg_full.csv"
 )
 
 parser.add_argument(
     "--kegg_gene2pathway_path",
     type=str,
-    default="/data/home/wenjian/药物扰动模型/宇峰师兄数据/processed/con_uce_gene2kegg.pkl"
+    default="data/processed/con_uce_gene2kegg.pkl"
 )
 
 parser.add_argument(
     "--control_path",
     type=str,
-    default="/data/home/wenjian/药物扰动模型/宇峰师兄数据/processed/ctl_vehicle_default164_ctrl1.h5ad"
+    default="data/processed/con_gene_aligned_12328_uce.h5ad"
 )
 
 parser.add_argument(
     "--perturb_path",
     type=str,
-    default="/data/home/wenjian/药物扰动模型/宇峰师兄数据/processed/10uM-24h_default164_ctrl0.h5ad"
+    default="data/processed/l1000_multidose_24h_0to100um_mean_aligned_12328.h5ad"
 )
 
 parser.add_argument(
     "--save_dir",
     type=str,
-    default="/data/home/wenjian/药物扰动模型/宇峰师兄数据/生物图全部扰动/训练验证测试结果/finalmodel3"
+    default="results/seed_{seed}"
 )
 
 args = parser.parse_args()
+args.save_dir = args.save_dir.replace("{seed}", str(args.seed))
+args.run_name = args.run_name.replace("{seed}", str(args.seed))
+
+for path_arg in (
+    "kegg_graph_path", "chromo_graph_path", "go_graph_path", "tftg_graph_path",
+    "kegg_gene2pathway_path", "control_path", "perturb_path", "save_dir",
+):
+    path_value = getattr(args, path_arg)
+    if path_value and path_value.lower() != "none":
+        setattr(args, path_arg, str(PROJECT_DIR / path_value))
 
 assert abs(args.train_ratio + args.val_ratio + args.test_ratio - 1.0) < 1e-8
+if args.preflight_only and args.eval_only:
+    parser.error("--preflight_only and --eval_only cannot be used together")
+
+DOSE_UNIT = "uM"
+DOSE_TRANSFORM = "log1p"
+DOSE_MIN_EXCLUSIVE = 0.0
+DOSE_MAX_INCLUSIVE = 100.0
+DOSE_BIN_EDGES = [0.0, 0.01, 0.1, 1.0, 10.0, 100.0]
+DOSE_BIN_LABELS = [
+    "(0,0.01]",
+    "(0.01,0.1]",
+    "(0.1,1]",
+    "(1,10]",
+    "(10,100]",
+]
 
 
-# ===============================
-# 固定随机种子
-# ===============================
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -126,9 +159,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 os.makedirs(args.save_dir, exist_ok=True)
 
 
-# ===============================
-# 工具函数
-# ===============================
 def to_dense_array(X):
     if sparse.issparse(X):
         return X.toarray()
@@ -159,7 +189,7 @@ def build_sparse_graph_adj(
     edge_df = pd.read_csv(graph_path)
     required_cols = {"source", "target", "importance"}
     if not required_cols.issubset(edge_df.columns):
-        raise ValueError(f"❌ {graph_name} 缺少列 {required_cols}: {graph_path}")
+        raise ValueError(f"❌ {graph_name} is missing required columns {required_cols}: {graph_path}")
 
     edge_df = edge_df[edge_df["importance"].astype(float) >= float(min_importance)].copy()
     if topk_per_target is not None and int(topk_per_target) > 0:
@@ -184,7 +214,6 @@ def build_sparse_graph_adj(
 
         source_idx = gene_to_idx[source]
         target_idx = gene_to_idx[target]
-        # A[target, source], so x @ A.T aggregates source neighbors into target genes.
         rows.append(target_idx)
         cols.append(source_idx)
         vals.append(float(weight))
@@ -272,12 +301,10 @@ def build_kegg_pathway_matrices(gene2pathway_path, gene_symbols):
     p2g_vals = []
 
     for gene_idx, pathway_idx in memberships:
-        # [P, G], pathway activity = mean expression of member genes.
         g2p_rows.append(pathway_idx)
         g2p_cols.append(gene_idx)
         g2p_vals.append(1.0 / max(pathway_sizes[pathway_idx], 1.0))
 
-        # [G, P], gene delta bias = mean pathway delta of pathways containing the gene.
         p2g_rows.append(gene_idx)
         p2g_cols.append(pathway_idx)
         p2g_vals.append(1.0 / max(gene_pathway_counts[gene_idx], 1.0))
@@ -308,18 +335,15 @@ def normalize_log1p(adata):
 
     X = adata.X
 
-    # 转 dense（你当前模型是 dense tensor）
     if sparse.issparse(X):
         X = X.toarray()
 
     X = np.asarray(X, dtype=np.float32)
 
-    # 1. library size normalization (CPM)
     lib_size = X.sum(axis=1, keepdims=True)
     lib_size[lib_size == 0] = 1.0
     X = X / lib_size * 1e6
 
-    # 2. log1p transform
     X = np.log1p(X)
 
     adata.X = X.astype(np.float32)
@@ -339,7 +363,7 @@ def sanitize_adata_matrix(adata, name="adata"):
         print("  sparse data -inf:", np.isneginf(data).sum())
         print("  sparse data negative:", (data < 0).sum())
 
-        data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+        np.nan_to_num(data, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         data[data < 0] = 0.0
 
         X.data = data
@@ -355,7 +379,7 @@ def sanitize_adata_matrix(adata, name="adata"):
         print("  dense -inf:", np.isneginf(X).sum())
         print("  dense negative:", (X < 0).sum())
 
-        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        np.nan_to_num(X, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         X[X < 0] = 0.0
         adata.X = X
 
@@ -368,20 +392,15 @@ def filter_low_variance_perturb_samples(
     save_dir=None,
     run_name="run"
 ):
-    """
-    过滤表达方差极低的扰动样本。
-    逐样本 R2 = 1 - MSE / var(y_true)，如果样本自身方差接近 0，
-    即使 MSE 正常也会产生巨大的负 R2。
-    """
-    X = to_dense_array(adata.X).astype(np.float64, copy=False)
-    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+    X = to_dense_array(adata.X).astype(np.float32, copy=False)
+    np.nan_to_num(X, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
-    row_mean = X.mean(axis=1)
-    row_var = X.var(axis=1)
+    row_mean = X.mean(axis=1, dtype=np.float64)
+    row_var = X.var(axis=1, dtype=np.float64)
     row_std = np.sqrt(row_var)
     row_min = X.min(axis=1)
     row_max = X.max(axis=1)
-    zero_fraction = (X == 0).mean(axis=1)
+    zero_fraction = 1.0 - (np.count_nonzero(X, axis=1) / X.shape[1])
 
     keep_mask = row_var > float(min_var)
 
@@ -429,12 +448,16 @@ def filter_low_variance_perturb_samples(
         print(f"  saved variance stats to: {stats_path}")
         print(f"  saved removed samples to: {removed_path}")
 
+    if keep_mask.all():
+        print("  all samples passed; reuse the existing expression matrix without copying")
+        return adata, removed_df
+
     return adata[keep_mask].copy(), removed_df
 
 
 def fcfp4_embedding(adata, smiles_col="smiles", n_bits=1024, radius=2):
     if smiles_col not in adata.obs.columns:
-        raise ValueError(f"❌ adata.obs 中缺少 smiles 列: {smiles_col}")
+        raise ValueError(f"❌ adata.obs is missing the SMILES column: {smiles_col}")
 
     smiles_list = adata.obs[smiles_col].astype(str).tolist()
     unique_smiles = pd.unique(smiles_list)
@@ -476,10 +499,6 @@ def split_train_val_test_by_drug(
     test_ratio=0.1,
     seed=42
 ):
-    """
-    当前 perturb_adata 已经全部是 10uM 扰动组。
-    按 drug_col 划分 train/val/test，保证同一个药物不会同时出现在不同集合。
-    """
     assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-8
 
     drug_series = perturb_adata.obs[drug_col].astype(str)
@@ -513,9 +532,9 @@ def split_train_val_test_by_drug(
     val_mask = perturb_adata.obs[drug_col].astype(str).isin(val_drugs).values
     test_mask = perturb_adata.obs[drug_col].astype(str).isin(test_drugs).values
 
-    train_perturb = perturb_adata[train_mask].copy()
-    val_perturb = perturb_adata[val_mask].copy()
-    test_perturb = perturb_adata[test_mask].copy()
+    train_perturb = perturb_adata[train_mask]
+    val_perturb = perturb_adata[val_mask]
+    test_perturb = perturb_adata[test_mask]
 
     return train_perturb, val_perturb, test_perturb, train_drugs, val_drugs, test_drugs
 
@@ -526,10 +545,6 @@ def random_pair_control_by_cell_type(
     seed=42,
     cell_col="cell_type"
 ):
-    """
-    按 cell_type 给每个扰动样本随机匹配一个同细胞系控制组。
-    你的 control 里 ctrl==1，且一般每个 cell_type 只有一个控制样本。
-    """
     rng = np.random.RandomState(seed)
 
     if "ctrl" in control.obs.columns:
@@ -541,42 +556,46 @@ def random_pair_control_by_cell_type(
     print(f"Control cell types: {control_pool_adata.obs[cell_col].nunique()}")
 
     control_pool = {}
-    for cell, sub_obs in control_pool_adata.obs.groupby(cell_col):
-        control_pool[str(cell)] = sub_obs.index.values
+    control_cells = control_pool_adata.obs[cell_col].astype(str).to_numpy()
+    for cell in np.unique(control_cells):
+        control_pool[cell] = np.flatnonzero(control_cells == cell)
 
-    matched_control_indices = []
-    valid_perturb_indices = []
+    perturb_cells = perturb.obs[cell_col].astype(str).to_numpy()
+    paired_control_indices = np.full(perturb.n_obs, -1, dtype=np.int64)
+    valid_mask = np.zeros(perturb.n_obs, dtype=bool)
     missing_cell_types = {}
 
-    for obs_name, row in perturb.obs.iterrows():
-        cell = str(row[cell_col])
-
+    for cell in np.unique(perturb_cells):
+        perturb_positions = np.flatnonzero(perturb_cells == cell)
         if cell not in control_pool or len(control_pool[cell]) == 0:
-            missing_cell_types[cell] = missing_cell_types.get(cell, 0) + 1
+            missing_cell_types[cell] = int(perturb_positions.size)
             continue
 
-        chosen_ctl = rng.choice(control_pool[cell])
+        paired_control_indices[perturb_positions] = rng.choice(
+            control_pool[cell],
+            size=perturb_positions.size,
+            replace=True,
+        )
+        valid_mask[perturb_positions] = True
 
-        matched_control_indices.append(chosen_ctl)
-        valid_perturb_indices.append(obs_name)
-
-    if len(valid_perturb_indices) == 0:
-        raise ValueError("❌ 没有任何 perturb 样本能匹配到相同 cell_type 的 control")
+    if not valid_mask.any():
+        raise ValueError("❌ No perturbation sample can be matched to a control with the same cell_type")
 
     if len(missing_cell_types) > 0:
-        print("⚠️ 以下 cell_type 在 control 中没有匹配，将被丢弃：")
+        print("⚠️ The following cell_type groups have no matching controls and will be discarded:")
         print(missing_cell_types)
 
-    matched_perturb = perturb[valid_perturb_indices].copy()
-    matched_control = control_pool_adata[matched_control_indices].copy()
+    matched_perturb = perturb[valid_mask].copy()
+    paired_control_indices = paired_control_indices[valid_mask]
+    paired_control_names = control_pool_adata.obs_names[paired_control_indices].astype(str)
 
-    matched_perturb.obs["paired_control_obs_name"] = matched_control.obs_names.values
-    matched_control.obs["paired_perturb_obs_name"] = matched_perturb.obs_names.values
+    matched_perturb.obs["paired_control_index"] = paired_control_indices
+    matched_perturb.obs["paired_control_obs_name"] = paired_control_names
 
     print(f"Matched perturb samples: {matched_perturb.n_obs}")
-    print(f"Matched control samples: {matched_control.n_obs}")
+    print(f"Paired through control bank rows: {np.unique(paired_control_indices).size}")
 
-    return matched_control, matched_perturb
+    return matched_perturb
 
 
 def save_pair_table(perturb_adata, save_path, drug_col):
@@ -593,48 +612,154 @@ def save_pair_table(perturb_adata, save_path, drug_col):
     pair_df.to_csv(save_path, index=False)
 
 
-def build_tensor(control, perturb):
-    X = torch.tensor(to_dense_array(control.X), dtype=torch.float32)
+class PairedPerturbationDataset(Data.Dataset):
 
+    def __init__(
+        self,
+        control_expression_bank,
+        control_uce_bank,
+        paired_control_indices,
+        drug,
+        dose,
+        cell_type,
+        target,
+    ):
+        self.control_expression_bank = control_expression_bank
+        self.control_uce_bank = control_uce_bank
+        self.paired_control_indices = paired_control_indices
+        self.drug = drug
+        self.dose = dose
+        self.cell_type = cell_type
+        self.target = target
+
+        n = self.target.shape[0]
+        assert n == self.paired_control_indices.shape[0]
+        assert n == self.drug.shape[0] == self.dose.shape[0] == self.cell_type.shape[0]
+
+    def __len__(self):
+        return self.target.shape[0]
+
+    def __getitem__(self, index):
+        control_index = self.paired_control_indices[index]
+        return (
+            self.control_expression_bank[control_index],
+            self.control_uce_bank[control_index],
+            self.drug[index],
+            self.dose[index],
+            self.cell_type[index],
+            self.target[index],
+        )
+
+
+def build_control_bank(control):
     if "X_uce" not in control.obsm:
-        raise ValueError("❌ control.obsm 中缺少 X_uce")
+        raise ValueError("❌ control.obsm is missing X_uce")
 
-    if "X_fcfp4" not in perturb.obsm:
-        raise ValueError("❌ perturb.obsm 中缺少 X_fcfp4")
-
-    uce = torch.tensor(np.asarray(control.obsm["X_uce"]), dtype=torch.float32)
-    drug = torch.tensor(np.asarray(perturb.obsm["X_fcfp4"]), dtype=torch.float32)
-
-    dose = torch.tensor(
-        perturb.obs["dose"].astype(float).values,
-        dtype=torch.float32
-    ).view(-1, 1)
-
-    cell_type = torch.tensor(
-        perturb.obs["cell_type_id"].astype(int).values,
-        dtype=torch.long
+    control_expression = np.ascontiguousarray(
+        to_dense_array(control.X), dtype=np.float32
     )
+    control_uce = np.ascontiguousarray(
+        np.asarray(control.obsm["X_uce"]), dtype=np.float32
+    )
+    if control_expression.shape[0] != control_uce.shape[0]:
+        raise ValueError("❌ The control expression matrix and X_uce have different row counts")
+    if not np.isfinite(control_expression).all() or not np.isfinite(control_uce).all():
+        raise ValueError("❌ The control expression matrix or X_uce contains NaN/Inf")
 
-    Y = torch.tensor(to_dense_array(perturb.X), dtype=torch.float32)
+    expression_bank = torch.from_numpy(control_expression)
+    uce_bank = torch.from_numpy(control_uce)
+    print("control expression bank shape:", expression_bank.shape)
+    print("control UCE bank shape:", uce_bank.shape)
+    return expression_bank, uce_bank
 
-    assert X.shape[0] == Y.shape[0] == uce.shape[0] == drug.shape[0] == dose.shape[0]
 
-    print("X shape:", X.shape)
-    print("uce shape:", uce.shape)
+def build_dataset(control_expression_bank, control_uce_bank, perturb):
+    if "X_fcfp4" not in perturb.obsm:
+        raise ValueError("❌ perturb.obsm is missing X_fcfp4")
+    if "paired_control_index" not in perturb.obs.columns:
+        raise ValueError("❌ perturb.obs is missing paired_control_index")
+
+    paired_control_indices = torch.from_numpy(
+        perturb.obs["paired_control_index"].astype(np.int64).to_numpy()
+    )
+    if paired_control_indices.min() < 0 or paired_control_indices.max() >= control_expression_bank.shape[0]:
+        raise ValueError("❌ paired_control_index is outside the control bank range")
+
+    drug = torch.from_numpy(np.ascontiguousarray(
+        np.asarray(perturb.obsm["X_fcfp4"]), dtype=np.float32
+    ))
+    dose = torch.from_numpy(np.ascontiguousarray(
+        perturb.obs["dose"].astype(np.float32).to_numpy()
+    )).view(-1, 1)
+    cell_type = torch.from_numpy(np.ascontiguousarray(
+        perturb.obs["cell_type_id"].astype(np.int64).to_numpy()
+    ))
+    target = torch.from_numpy(np.ascontiguousarray(
+        to_dense_array(perturb.X), dtype=np.float32
+    ))
+
+    print("paired control index shape:", paired_control_indices.shape)
     print("drug shape:", drug.shape)
     print("dose shape:", dose.shape)
-    print("Y shape:", Y.shape)
+    print(
+        "dose raw/model range:",
+        (float(dose.min()), float(dose.max())),
+        (float(torch.log1p(dose).min()), float(torch.log1p(dose).max()))
+    )
+    print("target shape:", target.shape)
 
-    print("X nan/inf:", torch.isnan(X).any().item(), torch.isinf(X).any().item())
-    print("uce nan/inf:", torch.isnan(uce).any().item(), torch.isinf(uce).any().item())
     print("drug nan/inf:", torch.isnan(drug).any().item(), torch.isinf(drug).any().item())
     print("dose nan/inf:", torch.isnan(dose).any().item(), torch.isinf(dose).any().item())
-    print("Y nan/inf:", torch.isnan(Y).any().item(), torch.isinf(Y).any().item())
+    print("target nan/inf:", torch.isnan(target).any().item(), torch.isinf(target).any().item())
 
-    return X, uce, drug, dose, cell_type, Y
+    return PairedPerturbationDataset(
+        control_expression_bank=control_expression_bank,
+        control_uce_bank=control_uce_bank,
+        paired_control_indices=paired_control_indices,
+        drug=drug,
+        dose=dose,
+        cell_type=cell_type,
+        target=target,
+    )
 
 
-def evaluate_model(dataloader, model):
+def transform_dose_for_model(raw_dose):
+    return torch.log1p(raw_dose)
+
+
+def calculate_sample_metrics(y_true, y_pred):
+    diff = y_true - y_pred
+    mse = np.mean(diff * diff, axis=1, dtype=np.float64)
+
+    true_centered = y_true - y_true.mean(axis=1, keepdims=True)
+    pred_centered = y_pred - y_pred.mean(axis=1, keepdims=True)
+
+    numerator = np.sum(true_centered * pred_centered, axis=1, dtype=np.float64)
+    denominator = np.sqrt(
+        np.sum(true_centered * true_centered, axis=1, dtype=np.float64)
+        * np.sum(pred_centered * pred_centered, axis=1, dtype=np.float64)
+    )
+    pearson = np.divide(
+        numerator,
+        denominator,
+        out=np.zeros_like(numerator, dtype=np.float64),
+        where=denominator > 0,
+    )
+
+    ss_res = np.sum(diff * diff, axis=1, dtype=np.float64)
+    ss_tot = np.sum(true_centered * true_centered, axis=1, dtype=np.float64)
+    r2 = np.divide(
+        ss_res,
+        ss_tot,
+        out=np.ones_like(ss_res, dtype=np.float64),
+        where=ss_tot > 0,
+    )
+    r2 = 1.0 - r2
+
+    return pearson, r2, mse
+
+
+def evaluate_model(dataloader, model, return_details=False):
     model.eval()
 
     pearson_sum = 0.0
@@ -642,10 +767,17 @@ def evaluate_model(dataloader, model):
     mse_sum = 0.0
     n = 0
     skipped = 0
+    sample_offset = 0
+    detail_parts = []
 
     with torch.no_grad():
         for batch_id, data in enumerate(dataloader):
             batch_con, batch_uce, batch_drug_embeddings, batch_doses, batch_cell_type, batch_y = data
+
+            batch_size = batch_y.shape[0]
+            batch_indices = np.arange(sample_offset, sample_offset + batch_size)
+            sample_offset += batch_size
+            raw_doses = batch_doses.detach().cpu().numpy().reshape(-1)
 
             batch_con = batch_con.to(device)
             batch_uce = batch_uce.to(device)
@@ -657,16 +789,16 @@ def evaluate_model(dataloader, model):
                 batch_con,
                 batch_uce,
                 batch_drug_embeddings,
-                batch_doses
+                transform_dose_for_model(batch_doses)
             )
 
             if torch.isnan(outputs).any() or torch.isinf(outputs).any():
-                print(f"⚠️ batch {batch_id} outputs 含 NaN/Inf，跳过该 batch")
+                print(f"⚠️ batch {batch_id} outputs contain NaN/Inf; skipping this batch")
                 skipped += outputs.size(0)
                 continue
 
             if torch.isnan(batch_y).any() or torch.isinf(batch_y).any():
-                print(f"⚠️ batch {batch_id} batch_y 含 NaN/Inf，跳过该 batch")
+                print(f"⚠️ batch {batch_id} batch_y contains NaN/Inf; skipping this batch")
                 skipped += batch_y.size(0)
                 continue
 
@@ -683,55 +815,131 @@ def evaluate_model(dataloader, model):
 
             y_true_batch = y_true_batch[valid_mask]
             y_pred_batch = y_pred_batch[valid_mask]
+            valid_indices = batch_indices[valid_mask]
+            valid_doses = raw_doses[valid_mask]
 
             if y_true_batch.shape[0] == 0:
                 continue
 
-            for i in range(y_true_batch.shape[0]):
-                y_true = y_true_batch[i]
-                y_pred = y_pred_batch[i]
+            pearson, r2, mse = calculate_sample_metrics(y_true_batch, y_pred_batch)
+            pearson_sum += float(pearson.sum())
+            r2_sum += float(r2.sum())
+            mse_sum += float(mse.sum())
+            n += int(y_true_batch.shape[0])
 
-                try:
-                    p = pearsonr(y_true, y_pred)[0]
-                    if np.isnan(p):
-                        p = 0.0
-                except Exception:
-                    p = 0.0
-
-                try:
-                    r2 = r2_score(y_true, y_pred)
-                    if np.isnan(r2):
-                        r2 = 0.0
-                except Exception:
-                    r2 = 0.0
-
-                try:
-                    mse = mean_squared_error(y_true, y_pred)
-                    if np.isnan(mse):
-                        mse = 0.0
-                except Exception:
-                    mse = 0.0
-
-                pearson_sum += p
-                r2_sum += r2
-                mse_sum += mse
-                n += 1
+            if return_details:
+                detail_parts.append(pd.DataFrame({
+                    "sample_index": valid_indices,
+                    "dose_um": valid_doses.astype(np.float64),
+                    "pearson": pearson,
+                    "r2": r2,
+                    "mse": mse,
+                }))
 
     print(f"evaluate valid samples: {n}, skipped: {skipped}")
 
     if n == 0:
+        if return_details:
+            return 0.0, 0.0, 0.0, pd.DataFrame(
+                columns=["sample_index", "dose_um", "pearson", "r2", "mse"]
+            )
         return 0.0, 0.0, 0.0
 
     mean_pearson = pearson_sum / n
     mean_r2 = r2_sum / n
     mean_mse = mse_sum / n
 
+    if return_details:
+        details = pd.concat(detail_parts, ignore_index=True) if detail_parts else pd.DataFrame()
+        return mean_pearson, mean_r2, mean_mse, details
+
     return mean_pearson, mean_r2, mean_mse
 
 
-# ===============================
-# 读取数据
-# ===============================
+def add_evaluation_metadata(metrics_df, perturb_adata, drug_col):
+    if metrics_df.empty:
+        raise ValueError("❌ Evaluation produced no valid sample metrics")
+
+    sample_indices = metrics_df["sample_index"].astype(int).to_numpy()
+    obs = perturb_adata.obs.iloc[sample_indices]
+    reported_doses = obs["dose"].astype(float).to_numpy()
+    metric_doses = metrics_df["dose_um"].astype(float).to_numpy()
+
+    expected_model_doses = reported_doses.astype(np.float32).astype(np.float64)
+    same_model_dose = np.array_equal(expected_model_doses, metric_doses)
+    same_source_dose = np.array_equal(reported_doses, metric_doses)
+    if not (same_model_dose or same_source_dose):
+        max_abs_diff = float(np.max(np.abs(reported_doses - metric_doses)))
+        raise ValueError(
+            "❌ Doses in the evaluation metrics do not match perturb.obs; "
+            f"max_abs_diff={max_abs_diff:.6g}"
+        )
+    metrics_df = metrics_df.copy()
+    metrics_df["dose_um"] = reported_doses
+
+    metadata = pd.DataFrame({
+        "perturb_obs_name": perturb_adata.obs_names[sample_indices].astype(str),
+        "cell_type": obs["cell_type"].astype(str).to_numpy(),
+        "drug": obs[drug_col].astype(str).to_numpy(),
+        "drug_name": obs["drug_name"].astype(str).to_numpy()
+        if "drug_name" in obs.columns else "NA",
+        "condition": obs["condition"].astype(str).to_numpy(),
+    })
+    return pd.concat(
+        [metadata.reset_index(drop=True), metrics_df.reset_index(drop=True)],
+        axis=1,
+    )
+
+
+def summarize_metric_groups(metrics_df, group_col):
+    return (
+        metrics_df.groupby(group_col, observed=True, sort=True)
+        .agg(
+            n_samples=("pearson", "size"),
+            mean_pearson=("pearson", "mean"),
+            mean_r2=("r2", "mean"),
+            mean_mse=("mse", "mean"),
+        )
+        .reset_index()
+    )
+
+
+def save_dose_evaluation_reports(metrics_df, perturb_adata, split_name):
+    metrics_df = add_evaluation_metadata(metrics_df, perturb_adata, args.drug_col)
+    sample_path = os.path.join(
+        args.save_dir, f"{args.run_name}_{split_name}_sample_metrics.csv"
+    )
+    metrics_df.to_csv(sample_path, index=False)
+
+    exact_dose_df = summarize_metric_groups(metrics_df, "dose_um")
+    exact_dose_path = os.path.join(
+        args.save_dir, f"{args.run_name}_{split_name}_dose_metrics.csv"
+    )
+    exact_dose_df.to_csv(exact_dose_path, index=False)
+
+    metrics_df["dose_bin_um"] = pd.cut(
+        metrics_df["dose_um"],
+        bins=DOSE_BIN_EDGES,
+        labels=DOSE_BIN_LABELS,
+        include_lowest=False,
+        right=True,
+    )
+    if metrics_df["dose_bin_um"].isna().any():
+        raise ValueError(f"❌ {split_name} contains doses outside the predefined intervals")
+
+    dose_bin_df = summarize_metric_groups(metrics_df, "dose_bin_um")
+    dose_bin_path = os.path.join(
+        args.save_dir, f"{args.run_name}_{split_name}_dose_bin_metrics.csv"
+    )
+    dose_bin_df.to_csv(dose_bin_path, index=False)
+
+    print(f"✅ Saved {split_name} sample metrics: {sample_path}")
+    print(f"✅ Saved {split_name} exact-dose metrics: {exact_dose_path}")
+    print(f"✅ Saved {split_name} dose-bin metrics: {dose_bin_path}")
+
+    return metrics_df, exact_dose_df, dose_bin_df
+
+
 print("📦 Loading data...")
 
 control_adata = sc.read_h5ad(args.control_path)
@@ -740,69 +948,82 @@ perturb_adata = sc.read_h5ad(args.perturb_path)
 print("control_adata:", control_adata)
 print("perturb_adata:", perturb_adata)
 
-required_cols = ["cell_type", args.drug_col, "ctrl", "condition"]
+required_cols = ["cell_type", args.drug_col, "ctrl", "condition", "dose"]
 
 for col in required_cols:
     if col not in perturb_adata.obs.columns:
-        raise ValueError(f"❌ perturb_adata.obs 中缺少 {col} 列")
+        raise ValueError(f"❌ perturb_adata.obs is missing required column {col}.")
 
 for col in ["cell_type", "ctrl", "condition"]:
     if col not in control_adata.obs.columns:
-        raise ValueError(f"❌ control_adata.obs 中缺少 {col} 列")
+        raise ValueError(f"❌ control_adata.obs is missing required column {col}.")
 
 if "X_uce" not in control_adata.obsm:
-    raise ValueError("❌ control_adata.obsm 中没有 X_uce，请确认控制组 h5ad 已经包含 UCE 特征")
+    raise ValueError("❌ control_adata.obsm is missing X_uce; ensure the control H5AD contains UCE features")
 
 
-# ===============================
-# 只保留扰动组和控制组
-# ===============================
-perturb_adata = perturb_adata[perturb_adata.obs["ctrl"].astype(int).values == 0].copy()
-control_adata = control_adata[control_adata.obs["ctrl"].astype(int).values == 1].copy()
+perturb_mask = perturb_adata.obs["ctrl"].astype(int).values == 0
+control_mask = control_adata.obs["ctrl"].astype(int).values == 1
+
+if not perturb_mask.all():
+    perturb_adata = perturb_adata[perturb_mask].copy()
+else:
+    print("✅ All perturb input rows have ctrl=0; skipped redundant matrix copy")
+
+if not control_mask.all():
+    control_adata = control_adata[control_mask].copy()
+else:
+    print("✅ All control input rows have ctrl=1; skipped redundant matrix copy")
 
 print("After filter:")
 print("perturb_adata:", perturb_adata.shape)
 print("control_adata:", control_adata.shape)
 
 
-# ===============================
-# 当前扰动组全部是 10uM
-# ===============================
-perturb_adata.obs["dose"] = 10.0
+dose_values = pd.to_numeric(perturb_adata.obs["dose"], errors="coerce").to_numpy(dtype=np.float64)
+if not np.isfinite(dose_values).all():
+    raise ValueError("❌ perturb_adata.obs['dose'] contains missing values or NaN/Inf")
+if np.any(dose_values <= DOSE_MIN_EXCLUSIVE) or np.any(dose_values > DOSE_MAX_INCLUSIVE):
+    raise ValueError(
+        f"❌ Perturbation doses must satisfy {DOSE_MIN_EXCLUSIVE} < dose <= {DOSE_MAX_INCLUSIVE} {DOSE_UNIT}"
+    )
+perturb_adata.obs["dose"] = dose_values
 control_adata.obs["dose"] = 0.0
 
-print("✅ Set perturb dose = 10.0 uM")
-print("✅ Set control dose = 0.0")
+print(
+    f"✅ Preserved perturb doses: {dose_values.min():.6g} to "
+    f"{dose_values.max():.6g} {DOSE_UNIT}, {np.unique(dose_values).size} unique doses"
+)
+print(f"✅ Model dose transform: {DOSE_TRANSFORM}")
+print(f"✅ Set control dose = 0.0 {DOSE_UNIT}")
+
+unique_smiles = perturb_adata.obs[args.drug_col].astype(str).unique()
+invalid_smiles = [smi for smi in unique_smiles if Chem.MolFromSmiles(smi) is None]
+if invalid_smiles:
+    raise ValueError(f"❌ Detected {len(invalid_smiles)} invalid SMILES, for example: {invalid_smiles[:5]}")
+print(f"✅ Validated {len(unique_smiles)} unique SMILES")
 
 
-# ===============================
-# gene 对齐
-# ===============================
 if not np.array_equal(perturb_adata.var_names, control_adata.var_names):
-    print("⚠️ perturb 和 control 的 var_names 不完全一致，开始取交集并对齐")
+    print("⚠️ perturb and control have different var_names; aligning their intersection")
 
     common_genes = perturb_adata.var_names.intersection(control_adata.var_names)
     print("common genes:", len(common_genes))
 
     if len(common_genes) == 0:
-        raise ValueError("❌ perturb 和 control 没有共同基因")
+        raise ValueError("❌ perturb and control have no genes in common")
 
     perturb_adata = perturb_adata[:, common_genes].copy()
     control_adata = control_adata[:, common_genes].copy()
 
 else:
-    print("✅ perturb 和 control 的 var_names 完全一致")
+    print("✅ perturb and control have identical var_names")
 
 
 print("🔬 Applying log1p + CPM normalization...")
 
-# control_adata = normalize_log1p(control_adata)
-# perturb_adata = normalize_log1p(perturb_adata)
 
 
-# ===============================
-# 过滤低方差异常扰动样本
-# ===============================
 if args.filter_low_var_perturb:
     perturb_adata, filtered_low_var_perturb_df = filter_low_variance_perturb_samples(
         perturb_adata,
@@ -812,13 +1033,10 @@ if args.filter_low_var_perturb:
     )
 
     if perturb_adata.n_obs == 0:
-        raise ValueError("❌ 低方差过滤后 perturb_adata 没有剩余样本，请调低 --min_perturb_expr_var")
+        raise ValueError("❌ No perturbation samples remain after low-variance filtering; lower --min_perturb_expr_var")
 else:
     print("⚠️ Skip low-variance perturb sample filtering")
 
-# ===============================
-# cell_type id 映射
-# ===============================
 all_cell_types = sorted(
     set(perturb_adata.obs["cell_type"].astype(str).unique())
     | set(control_adata.obs["cell_type"].astype(str).unique())
@@ -834,12 +1052,9 @@ control_adata.obs["cell_type_id"] = (
     control_adata.obs["cell_type"].astype(str).map(cell_type_id).astype(int)
 )
 
-print(f"✅ cell_type 数量: {len(cell_type_id)}")
+print(f"✅ Number of cell types: {len(cell_type_id)}")
 
 
-# ===============================
-# train / val / test 按药物划分
-# ===============================
 print("\n" + "=" * 80)
 print("🚀 Train / Val / Test split by unseen drugs")
 print("=" * 80)
@@ -861,6 +1076,40 @@ print(f"Train drugs: {len(train_drugs)}")
 print(f"Val drugs: {len(val_drugs)}")
 print(f"Test drugs: {len(test_drugs)}")
 
+split_overlaps = {
+    "train_val": train_drugs & val_drugs,
+    "train_test": train_drugs & test_drugs,
+    "val_test": val_drugs & test_drugs,
+}
+if any(split_overlaps.values()):
+    raise ValueError(f"❌ Drug leakage detected across train/val/test: {split_overlaps}")
+if (train_drugs | val_drugs | test_drugs) != set(perturb_adata.obs[args.drug_col].astype(str)):
+    raise ValueError("❌ The train/val/test drug sets do not cover the full input data")
+print("✅ Verified disjoint train/val/test SMILES sets")
+
+split_summary_df = pd.DataFrame([
+    {
+        "split": split_name,
+        "n_samples": split_adata.n_obs,
+        "n_unique_smiles": split_adata.obs[args.drug_col].astype(str).nunique(),
+        "n_unique_drug_names": split_adata.obs["drug_name"].astype(str).nunique()
+        if "drug_name" in split_adata.obs.columns else np.nan,
+        "n_cell_types": split_adata.obs["cell_type"].astype(str).nunique(),
+        "n_unique_doses": split_adata.obs["dose"].nunique(),
+        "min_dose_um": float(split_adata.obs["dose"].min()),
+        "max_dose_um": float(split_adata.obs["dose"].max()),
+    }
+    for split_name, split_adata in [
+        ("train", train_perturb),
+        ("val", val_perturb),
+        ("test", test_perturb),
+    ]
+])
+split_summary_df.to_csv(
+    os.path.join(args.save_dir, f"{args.run_name}_split_summary.csv"),
+    index=False,
+)
+
 pd.DataFrame({"train_drugs": sorted(list(train_drugs))}).to_csv(
     os.path.join(args.save_dir, f"{args.run_name}_train_drugs.csv"),
     index=False
@@ -877,26 +1126,23 @@ pd.DataFrame({"test_drugs": sorted(list(test_drugs))}).to_csv(
 )
 
 
-# ===============================
-# 按 cell_type 匹配控制组
-# ===============================
 print("\n🔄 Pairing controls by same cell_type...")
 
-train_control, train_perturb = random_pair_control_by_cell_type(
+train_perturb = random_pair_control_by_cell_type(
     perturb=train_perturb,
     control=control_adata,
     seed=args.seed,
     cell_col="cell_type"
 )
 
-val_control, val_perturb = random_pair_control_by_cell_type(
+val_perturb = random_pair_control_by_cell_type(
     perturb=val_perturb,
     control=control_adata,
     seed=args.seed + 1,
     cell_col="cell_type"
 )
 
-test_control, test_perturb = random_pair_control_by_cell_type(
+test_perturb = random_pair_control_by_cell_type(
     perturb=test_perturb,
     control=control_adata,
     seed=args.seed + 2,
@@ -924,9 +1170,6 @@ save_pair_table(
 print("✅ Pair tables saved.")
 
 
-# ===============================
-# 构建药物指纹
-# ===============================
 print("\n🧬 Building drug fingerprints...")
 
 train_perturb = fcfp4_embedding(train_perturb, smiles_col=args.drug_col)
@@ -934,56 +1177,46 @@ val_perturb = fcfp4_embedding(val_perturb, smiles_col=args.drug_col)
 test_perturb = fcfp4_embedding(test_perturb, smiles_col=args.drug_col)
 
 
-# ===============================
-# 数据清洗
-# ===============================
 print("\n🧼 Sanitizing data...")
 
-train_control = sanitize_adata_matrix(train_control, "train_control")
-val_control = sanitize_adata_matrix(val_control, "val_control")
-test_control = sanitize_adata_matrix(test_control, "test_control")
+control_adata = sanitize_adata_matrix(control_adata, "control_bank")
 
 train_perturb = sanitize_adata_matrix(train_perturb, "train_perturb")
 val_perturb = sanitize_adata_matrix(val_perturb, "val_perturb")
 test_perturb = sanitize_adata_matrix(test_perturb, "test_perturb")
 
 
-# ===============================
-# Tensor / DataLoader
-# ===============================
 print("\n🧱 Building tensors...")
 
-train_data = build_tensor(train_control, train_perturb)
-val_data = build_tensor(val_control, val_perturb)
-test_data = build_tensor(test_control, test_perturb)
+control_expression_bank, control_uce_bank = build_control_bank(control_adata)
+train_data = build_dataset(control_expression_bank, control_uce_bank, train_perturb)
+val_data = build_dataset(control_expression_bank, control_uce_bank, val_perturb)
+test_data = build_dataset(control_expression_bank, control_uce_bank, test_perturb)
 
 train_iter = Data.DataLoader(
-    Data.TensorDataset(*train_data),
+    train_data,
     batch_size=args.batch_size,
     shuffle=True
 )
 
 val_iter = Data.DataLoader(
-    Data.TensorDataset(*val_data),
+    val_data,
     batch_size=args.batch_size,
     shuffle=False
 )
 
 test_iter = Data.DataLoader(
-    Data.TensorDataset(*test_data),
+    test_data,
     batch_size=args.batch_size,
     shuffle=False
 )
 
 
-# ===============================
-# 初始化模型
-# ===============================
 print("\n🧠 Initializing model...")
-gene_dim = train_data[5].shape[1]
+gene_dim = train_data.target.shape[1]
 gene_symbols = get_gene_symbols(control_adata)
 if len(gene_symbols) != gene_dim:
-    raise ValueError(f"❌ gene_symbols 数量 {len(gene_symbols)} != gene_dim {gene_dim}")
+    raise ValueError(f"❌ Number of gene_symbols {len(gene_symbols)} != gene_dim {gene_dim}")
 
 if args.use_bio_graph:
     print("\n🧬 Building sparse graph priors...")
@@ -1066,12 +1299,59 @@ best_epoch = -1
 save_path = os.path.join(args.save_dir, f"best_model_{args.run_name}.pth")
 
 
-# ===============================
-# 训练
-# ===============================
+if args.preflight_only:
+    print("\n🧪 Running one-batch preflight...")
+    model.train()
+    preflight_data = next(iter(train_iter))
+    preflight_con, preflight_uce, preflight_drug, preflight_dose, preflight_cell, preflight_y = [
+        x.to(device) for x in preflight_data
+    ]
+    preflight_outputs, preflight_cell_logits, _ = model(
+        preflight_con,
+        preflight_uce,
+        preflight_drug,
+        transform_dose_for_model(preflight_dose),
+    )
+    preflight_loss_expr = criterion(
+        preflight_outputs - preflight_con,
+        preflight_y - preflight_con,
+    )
+    preflight_loss_cls = criterion_cls(preflight_cell_logits, preflight_cell)
+    preflight_loss = preflight_loss_expr + 0.1 * preflight_loss_cls
+    if not torch.isfinite(preflight_outputs).all() or not torch.isfinite(preflight_loss):
+        raise ValueError("❌ preflight forward outputs or loss contain NaN/Inf")
+    optimizer.zero_grad()
+    preflight_loss.backward()
+    print(
+        f"✅ PREFLIGHT PASSED | batch={preflight_y.shape[0]} | "
+        f"loss={preflight_loss.item():.6f} | UCE dim={preflight_uce.shape[1]} | "
+        f"raw dose range=({preflight_dose.min().item():.6g}, {preflight_dose.max().item():.6g}) {DOSE_UNIT}"
+    )
+    sys.exit(0)
+
+
 print("\n🏋️ Start training...")
 
-for epoch in range(args.epochs):
+if args.eval_only:
+    if not os.path.isfile(save_path):
+        raise FileNotFoundError(f"❌ --eval_only could not find the best model checkpoint: {save_path}")
+    existing_ckpt = torch.load(save_path, map_location="cpu", weights_only=False)
+    if existing_ckpt.get("run_name") != args.run_name:
+        raise ValueError(
+            f"❌ checkpoint run_name={existing_ckpt.get('run_name')} "
+            f"does not match the current run_name={args.run_name}."
+        )
+    best_epoch = int(existing_ckpt["epoch"])
+    best_pearson = float(existing_ckpt["best_pearson"])
+    best_r2 = float(existing_ckpt["best_r2"])
+    best_mse = float(existing_ckpt["best_mse"])
+    del existing_ckpt
+    training_epochs = 0
+    print(f"⏭️ --eval_only: reuse checkpoint {save_path} (best epoch {best_epoch})")
+else:
+    training_epochs = args.epochs
+
+for epoch in range(training_epochs):
     model.train()
     running_loss = 0.0
     valid_batches = 0
@@ -1085,15 +1365,15 @@ for epoch in range(args.epochs):
             train_con,
             train_uce,
             train_drug,
-            train_dose
+            transform_dose_for_model(train_dose)
         )
 
         if torch.isnan(outputs).any() or torch.isinf(outputs).any():
-            print("❌ outputs 出现 NaN/Inf，跳过该 batch")
+            print("❌ outputs contain NaN/Inf; skipping this batch")
             continue
 
         if torch.isnan(train_y).any() or torch.isinf(train_y).any():
-            print("❌ train_y 出现 NaN/Inf，跳过该 batch")
+            print("❌ train_y contains NaN/Inf; skipping this batch")
             continue
 
         loss_expr = criterion(outputs - train_con, train_y - train_con)
@@ -1101,7 +1381,7 @@ for epoch in range(args.epochs):
         loss = loss_expr + 0.1 * loss_cls
 
         if torch.isnan(loss) or torch.isinf(loss):
-            print("❌ loss 出现 NaN/Inf，跳过该 batch")
+            print("❌ loss is NaN/Inf; skipping this batch")
             continue
 
         optimizer.zero_grad()
@@ -1148,7 +1428,15 @@ for epoch in range(args.epochs):
             "n_val_drugs": len(val_drugs),
             "n_test_drugs": len(test_drugs),
             "cell_type_id": cell_type_id,
-            "dose_value": 10.0,
+            "dose_unit": DOSE_UNIT,
+            "dose_transform": DOSE_TRANSFORM,
+            "perturb_dose_min_um": float(perturb_adata.obs["dose"].min()),
+            "perturb_dose_max_um": float(perturb_adata.obs["dose"].max()),
+            "n_unique_doses": int(perturb_adata.obs["dose"].nunique()),
+            "control_path": args.control_path,
+            "perturb_path": args.perturb_path,
+            "uce_used": True,
+            "uce_dim": int(control_adata.obsm["X_uce"].shape[1]),
             "use_bio_graph": args.use_bio_graph,
             "chromo_graph_path": args.chromo_graph_path,
             "go_graph_path": args.go_graph_path,
@@ -1167,16 +1455,21 @@ for epoch in range(args.epochs):
         print(f"💾 Saved best checkpoint to: {save_path}")
 
 
-# ===============================
-# 测试集评估
-# ===============================
-print("\n📌 Evaluating best model on test set...")
+print("\n📌 Evaluating best model on validation and test sets...")
 
 best_ckpt = torch.load(save_path, map_location=device, weights_only=False)
 model.load_state_dict(best_ckpt["model_state_dict"])
 model.eval()
 
-test_pearson, test_r2, test_mse = evaluate_model(test_iter, model)
+final_val_pearson, final_val_r2, final_val_mse, val_sample_metrics = evaluate_model(
+    val_iter, model, return_details=True
+)
+test_pearson, test_r2, test_mse, test_sample_metrics = evaluate_model(
+    test_iter, model, return_details=True
+)
+
+save_dose_evaluation_reports(val_sample_metrics, val_perturb, "val")
+save_dose_evaluation_reports(test_sample_metrics, test_perturb, "test")
 
 print("\n" + "=" * 80)
 print("✅ Final model training finished")
@@ -1185,6 +1478,9 @@ print(f"Best Epoch: {best_epoch}")
 print(f"Best Val Pearson: {best_pearson:.6f}")
 print(f"Best Val Sample R2: {best_r2:.6f}")
 print(f"Best Val MSE: {best_mse:.6f}")
+print(f"Reloaded Val Pearson: {final_val_pearson:.6f}")
+print(f"Reloaded Val Sample R2: {final_val_r2:.6f}")
+print(f"Reloaded Val MSE: {final_val_mse:.6f}")
 print(f"Test Pearson: {test_pearson:.6f}")
 print(f"Test Sample R2: {test_r2:.6f}")
 print(f"Test MSE: {test_mse:.6f}")
@@ -1195,6 +1491,9 @@ pd.DataFrame([{
     "best_val_pearson": best_pearson,
     "best_val_r2": best_r2,
     "best_val_mse": best_mse,
+    "reloaded_val_pearson": final_val_pearson,
+    "reloaded_val_r2": final_val_r2,
+    "reloaded_val_mse": final_val_mse,
     "test_pearson": test_pearson,
     "test_r2": test_r2,
     "test_mse": test_mse,
@@ -1204,7 +1503,13 @@ pd.DataFrame([{
     "n_train_samples": train_perturb.n_obs,
     "n_val_samples": val_perturb.n_obs,
     "n_test_samples": test_perturb.n_obs,
-    "dose": 10.0,
+    "dose_unit": DOSE_UNIT,
+    "dose_transform": DOSE_TRANSFORM,
+    "dose_min_um": float(perturb_adata.obs["dose"].min()),
+    "dose_max_um": float(perturb_adata.obs["dose"].max()),
+    "n_unique_doses": int(perturb_adata.obs["dose"].nunique()),
+    "split_by": args.drug_col,
+    "uce_used": True,
 }]).to_csv(
     os.path.join(args.save_dir, f"{args.run_name}_final_metrics.csv"),
     index=False

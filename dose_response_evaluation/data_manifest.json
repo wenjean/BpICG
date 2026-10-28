@@ -1,0 +1,40 @@
+{
+  "algorithm": "sha256",
+  "files": [
+    {
+      "path": "data/priors/con_uce_kegg_full.csv",
+      "size_bytes": 249915,
+      "sha256": "6e56d0caf599af367e2a292d4c79d1c12f2c4af97b15c81ff6ddfc04f15f2a67"
+    },
+    {
+      "path": "data/priors/con_uce_chromo_full.csv",
+      "size_bytes": 21870084,
+      "sha256": "4eb4e3a6ac130f26f8063519bad10c64e0a8c54fcd24b001faa5a41ad58692d4"
+    },
+    {
+      "path": "data/priors/con_uce_go_top21.csv",
+      "size_bytes": 7195377,
+      "sha256": "e38f2a08c46ace638859ae954892de1d858d226d4c5b61ca7b45d2e8c2c83abc"
+    },
+    {
+      "path": "data/priors/con_uce_tftg_full.csv",
+      "size_bytes": 11631649,
+      "sha256": "e60461195854dbff7b2ff2c6a98f73c4e402bf94e1710f095e3fb3b2ba071792"
+    },
+    {
+      "path": "data/processed/con_uce_gene2kegg.pkl",
+      "size_bytes": 29280,
+      "sha256": "4311968e2305a2313aa433739ef35651687fb26a3d2f96a2f238e38df45caa21"
+    },
+    {
+      "path": "data/processed/con_gene_aligned_12328_uce.h5ad",
+      "size_bytes": 18193161,
+      "sha256": "c7bf691fe8c854617bf5debb99d72ce2d93e9b3b4c408464b48c422397c698de"
+    },
+    {
+      "path": "data/processed/l1000_multidose_24h_0to100um_mean_aligned_12328.h5ad",
+      "size_bytes": 16183046145,
+      "sha256": "b3f5b4da49c40408d8ba151051772db865561f7f5c672857fec58b4299b15960"
+    }
+  ]
+}

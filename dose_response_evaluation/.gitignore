@@ -1,0 +1,9 @@
+/data/processed/l1000_multidose_24h_0to100um_mean_aligned_12328.h5ad
+/results/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+.venv/
+*.log
+.DS_Store

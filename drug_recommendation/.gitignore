@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+*.log
+*.tmp
+/药物推荐结果/
+/data/controls/*.h5ad

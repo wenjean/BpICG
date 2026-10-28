@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import argparse
 import warnings
 import random
@@ -15,13 +16,18 @@ from tqdm import tqdm
 
 from model import DrugPerturbationModel_embedding_v2
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def project_path(value):
+    path = Path(value).expanduser()
+    return str(path if path.is_absolute() else PROJECT_ROOT / path)
+
+
 warnings.filterwarnings("ignore")
 RDLogger.DisableLog("rdApp.*")
 
 
-# ===============================
-# 基础工具
-# ===============================
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -140,7 +146,7 @@ def build_sparse_graph_adj(
     edge_df = pd.read_csv(graph_path)
     required_cols = {"source", "target", "importance"}
     if not required_cols.issubset(edge_df.columns):
-        raise ValueError(f"❌ {graph_name} 缺少列 {required_cols}: {graph_path}")
+        raise ValueError(f"❌ {graph_name} is missing required columns {required_cols}: {graph_path}")
 
     edge_df = edge_df[edge_df["importance"].astype(float) >= float(min_importance)].copy()
     if topk_per_target is not None and int(topk_per_target) > 0:
@@ -272,9 +278,6 @@ def build_kegg_pathway_matrices(gene2pathway_path, gene_symbols):
     return gene_to_pathway, pathway_to_gene, len(pathway_ids), pathway_ids
 
 
-# ===============================
-# SMILES 处理
-# ===============================
 def detect_smiles_column(df: pd.DataFrame, preferred=None) -> str:
     if preferred and preferred in df.columns:
         return preferred
@@ -292,8 +295,8 @@ def detect_smiles_column(df: pd.DataFrame, preferred=None) -> str:
         return df.columns[0]
 
     raise ValueError(
-        f"❌ 无法自动识别 SMILES 列。当前列为: {list(df.columns)}。"
-        f"请手动指定 --smiles_col"
+        f"❌ Cannot automatically identify the SMILES column. Available columns: {list(df.columns)}."
+        f" Specify the column with --smiles_col"
     )
 
 
@@ -340,7 +343,7 @@ def build_fcfp4_embeddings(smiles_list, candidate_ids=None, n_bits: int = 1024):
     if candidate_ids is None:
         candidate_ids = [str(i) for i in range(len(smiles_list))]
     if len(candidate_ids) != len(smiles_list):
-        raise ValueError("candidate_ids 与 smiles_list 长度不一致")
+        raise ValueError("candidate_ids and smiles_list have different lengths")
 
     fps = []
     valid_smiles = []
@@ -376,14 +379,11 @@ def build_fcfp4_embeddings(smiles_list, candidate_ids=None, n_bits: int = 1024):
             invalid_ids.append(candidate_id)
 
     if not fps:
-        raise ValueError("❌ 输入文件里没有有效 SMILES")
+        raise ValueError("❌ No valid SMILES found in the input file")
 
     return np.stack(fps, axis=0), valid_smiles, valid_ids, invalid_smiles, invalid_ids
 
 
-# ===============================
-# 控制组准备：适配新数据结构
-# ===============================
 def prepare_controls_by_cell_type(
     control_path: str,
     cell_type: str,
@@ -397,13 +397,13 @@ def prepare_controls_by_cell_type(
     print("Loaded control adata:", adata)
 
     if "X_uce" not in adata.obsm:
-        raise ValueError("❌ control h5ad 中没有 obsm['X_uce']")
+        raise ValueError("❌ control H5AD is missing obsm['X_uce']")
 
     if cell_col not in adata.obs.columns:
-        raise ValueError(f"❌ control adata.obs 中缺少 {cell_col}")
+        raise ValueError(f"❌ control adata.obs is missing required column {cell_col}")
 
     if ctrl_col not in adata.obs.columns:
-        raise ValueError(f"❌ control adata.obs 中缺少 {ctrl_col}")
+        raise ValueError(f"❌ control adata.obs is missing required column {ctrl_col}")
 
     mask = (
         (adata.obs[ctrl_col].astype(int).values == 1) &
@@ -415,8 +415,8 @@ def prepare_controls_by_cell_type(
     if ctrl.n_obs == 0:
         available = sorted(adata.obs[cell_col].astype(str).unique().tolist())
         raise ValueError(
-            f"❌ 没有找到 cell_type={cell_type} 的控制组。\n"
-            f"可用 cell_type 示例: {available[:30]}"
+            f"❌ No control samples found for cell_type={cell_type}.\n"
+            f"Available cell_type examples: {available[:30]}"
         )
 
     ctrl = limit_control_cells(
@@ -435,9 +435,6 @@ def prepare_controls_by_cell_type(
 
     ctrl_for_model = ctrl.copy()
 
-    # 注意：
-    # 这里不做 normalize_total / log1p
-    # 因为你的训练代码也是直接使用当前 X
     ctrl_for_model = sanitize_adata_matrix(
         ctrl_for_model,
         name=f"{cell_type}_control_for_model"
@@ -462,13 +459,13 @@ def prepare_controls_by_cell_types_mean(
     print("Loaded control adata:", adata)
 
     if "X_uce" not in adata.obsm:
-        raise ValueError("❌ control h5ad 中没有 obsm['X_uce']")
+        raise ValueError("❌ control H5AD is missing obsm['X_uce']")
 
     if cell_col not in adata.obs.columns:
-        raise ValueError(f"❌ control adata.obs 中缺少 {cell_col}")
+        raise ValueError(f"❌ control adata.obs is missing required column {cell_col}")
 
     if ctrl_col not in adata.obs.columns:
-        raise ValueError(f"❌ control adata.obs 中缺少 {ctrl_col}")
+        raise ValueError(f"❌ control adata.obs is missing required column {ctrl_col}")
 
     cell_types = [str(ct) for ct in cell_types]
     mask = (
@@ -481,8 +478,8 @@ def prepare_controls_by_cell_types_mean(
     if ctrl.n_obs == 0:
         available = sorted(adata.obs[cell_col].astype(str).unique().tolist())
         raise ValueError(
-            f"❌ 没有找到 cell_type in {cell_types} 的控制组。\n"
-            f"可用 cell_type 示例: {available[:30]}"
+            f"❌ No control samples found for cell_type in {cell_types}.\n"
+            f"Available cell_type examples: {available[:30]}"
         )
 
     ctrl = limit_control_cells(
@@ -522,9 +519,6 @@ def prepare_controls_by_cell_types_mean(
     return ctrl_norm_mean, ctrl_raw_mean, ctrl_uce_mean, gene_names, counts
 
 
-# ===============================
-# 模型加载
-# ===============================
 def infer_model_kwargs_from_state_dict(state_dict):
     gene_size = None
     uce_dim = 1280
@@ -553,7 +547,7 @@ def infer_model_kwargs_from_state_dict(state_dict):
         num_cell_types = int(state_dict["cell_type_head.3.weight"].shape[0])
 
     if gene_size is None:
-        raise ValueError("❌ 无法从 checkpoint state_dict 推断 gene_size")
+        raise ValueError("❌ Cannot infer gene_size from the checkpoint state_dict")
 
     model_kwargs = {
         "gene_size": gene_size,
@@ -575,7 +569,11 @@ def infer_model_kwargs_from_state_dict(state_dict):
 def get_ckpt_or_default(ckpt, key, default):
     value = ckpt.get(key, default)
     if value is None:
-        return default
+        value = default
+    if key.endswith("_path"):
+        if Path(str(value)).is_absolute():
+            value = default
+        return project_path(value)
     return value
 
 
@@ -593,7 +591,7 @@ def build_model_priors_from_checkpoint(ckpt, model_kwargs, gene_symbols):
             get_ckpt_or_default(
                 ckpt,
                 "chromo_graph_path",
-                "/data/home/wenjian/药物扰动模型/宇峰师兄数据/先验知识图/con_uce_chromo_full.csv",
+                "data/priors/con_uce_chromo_full.csv",
             ),
             gene_symbols,
             graph_name="Chromo",
@@ -604,7 +602,7 @@ def build_model_priors_from_checkpoint(ckpt, model_kwargs, gene_symbols):
             get_ckpt_or_default(
                 ckpt,
                 "go_graph_path",
-                "/data/home/wenjian/药物扰动模型/宇峰师兄数据/先验知识图/con_uce_go_top21.csv",
+                "data/priors/con_uce_go_top21.csv",
             ),
             gene_symbols,
             graph_name="GO",
@@ -615,7 +613,7 @@ def build_model_priors_from_checkpoint(ckpt, model_kwargs, gene_symbols):
             get_ckpt_or_default(
                 ckpt,
                 "kegg_graph_path",
-                "/data/home/wenjian/药物扰动模型/宇峰师兄数据/先验知识图/con_uce_kegg_full.csv",
+                "data/priors/con_uce_kegg_full.csv",
             ),
             gene_symbols,
             graph_name="KEGG",
@@ -626,7 +624,7 @@ def build_model_priors_from_checkpoint(ckpt, model_kwargs, gene_symbols):
             get_ckpt_or_default(
                 ckpt,
                 "tftg_graph_path",
-                "/data/home/wenjian/药物扰动模型/宇峰师兄数据/先验知识图/con_uce_tftg_full.csv",
+                "data/priors/con_uce_tftg_full.csv",
             ),
             gene_symbols,
             graph_name="TF-TG",
@@ -636,7 +634,7 @@ def build_model_priors_from_checkpoint(ckpt, model_kwargs, gene_symbols):
 
         missing = [name for name in ["chromo_adj", "go_adj", "kegg_adj", "tftg_adj"] if prior_kwargs[name] is None]
         if missing:
-            raise ValueError(f"❌ checkpoint 需要生物图模块，但以下图未成功构建: {missing}")
+            raise ValueError(f"❌ The checkpoint requires the biological graph module, but these graphs could not be built: {missing}")
 
     if model_kwargs.get("use_pathway_encoder", False):
         print("\n🧬 Rebuilding KEGG pathway encoder matrices for recommendation...")
@@ -644,17 +642,17 @@ def build_model_priors_from_checkpoint(ckpt, model_kwargs, gene_symbols):
             get_ckpt_or_default(
                 ckpt,
                 "kegg_gene2pathway_path",
-                "/data/home/wenjian/药物扰动模型/宇峰师兄数据/processed/con_uce_gene2kegg.pkl",
+                "data/priors/con_uce_gene2kegg.pkl",
             ),
             gene_symbols,
         )
         if gene_to_pathway is None or pathway_to_gene is None:
-            raise ValueError("❌ checkpoint 需要 pathway_encoder，但 KEGG pathway 矩阵未成功构建")
+            raise ValueError("❌ The checkpoint requires pathway_encoder, but the KEGG pathway matrices could not be built")
 
         expected_num_pathways = model_kwargs.get("num_pathways")
         if expected_num_pathways is not None and int(expected_num_pathways) != int(num_pathways):
             raise ValueError(
-                f"❌ pathway 数量与 checkpoint 不一致: "
+                f"❌ The number of pathways does not match the checkpoint: "
                 f"rebuilt={num_pathways}, checkpoint={expected_num_pathways}"
             )
 
@@ -689,9 +687,6 @@ def load_model(checkpoint_path: str, device: torch.device, gene_symbols):
     return model, ckpt
 
 
-# ===============================
-# 基因集处理
-# ===============================
 def load_gene_list(path: str):
     genes = []
 
@@ -734,9 +729,6 @@ def filter_signature_to_genes(up_genes, down_genes, gene_set):
     return up_f, down_f
 
 
-# ===============================
-# reverse score
-# ===============================
 def ranklist(DT):
     ranks = DT.rank(ascending=False, method="first")
     return ranks
@@ -779,13 +771,6 @@ def compute_b_score(query_genes, ranked_matrix):
 
 
 def computecs(qup, qdown, expression):
-    """
-    reverse score:
-    - melanoma 上调基因，希望药物压低
-    - melanoma 下调基因，希望药物拉高
-
-    score 越小，逆转效果越强。
-    """
     ranked_matrix = ranklist(expression)
 
     if not qup or not qdown:
@@ -824,7 +809,7 @@ def score_predicted_drugs_from_fc(
 
     if len(up_f) < 5 or len(down_f) < 5:
         raise ValueError(
-            f"❌ 与表达矩阵重叠基因太少: up={len(up_f)}, down={len(down_f)}"
+            f"❌ Too few genes overlap with the expression matrix: up={len(up_f)}, down={len(down_f)}"
         )
 
     cs = computecs(up_f, down_f, expression)
@@ -835,8 +820,6 @@ def score_predicted_drugs_from_fc(
     return ranked, summary, up_f, down_f
 
 
-# ===============================
-# 预测
 
 def predict_mean_profiles(
     model,
@@ -850,11 +833,6 @@ def predict_mean_profiles(
     batch_size: int,
     device: torch.device,
 ):
-    """
-    加速版：
-    - 如果某个 cell_type 只有 1 个 control，则一次预测很多药物
-    - 避免候选药物逐个 forward
-    """
     eps = 1e-6
     n_ctrl = controls_norm.shape[0]
     n_drug = smiles_embeddings.shape[0]
@@ -866,9 +844,6 @@ def predict_mean_profiles(
 
     with torch.no_grad():
 
-        # ===============================
-        # 情况1：只有一个 control，最快
-        # ===============================
         if n_ctrl == 1:
             ctrl_norm = controls_norm[0:1]
             ctrl_raw = controls_raw[0:1]
@@ -916,9 +891,6 @@ def predict_mean_profiles(
             perturbed_arr = np.concatenate(mean_perturbed_rows, axis=0)
             fc_arr = np.concatenate(mean_fc_rows, axis=0)
 
-        # ===============================
-        # 情况2：多个 control，仍然 batch 化
-        # ===============================
         else:
             all_perturbed = []
             all_fc = []
@@ -995,9 +967,6 @@ def predict_mean_profiles(
 
     return perturbed_df, fc_df
 
-# ===============================
-# 单个 cell_type 推荐流程
-# ===============================
 def run_single_cell_type(
     model,
     control_path,
@@ -1033,49 +1002,23 @@ def run_single_cell_type(
 
     if controls_norm.shape[1] != model.gene_size:
         raise ValueError(
-            f"❌ control gene 数与模型不一致: "
-            f"control={controls_norm.shape[1]}, model={model.gene_size}。"
-            f"请确认 --control_path 与训练 checkpoint 时使用的基因集合和顺序一致。"
+            f"❌ The number of control genes does not match the model: "
+            f"control={controls_norm.shape[1]}, model={model.gene_size}."
+            f" Ensure --control_path uses the same genes in the same order as the training checkpoint."
         )
 
     if controls_uce.shape[1] != model.uce_dim:
         raise ValueError(
-            f"❌ control X_uce 维度与模型不一致: "
+            f"❌ The control X_uce dimensions do not match the model: "
             f"control={controls_uce.shape[1]}, model={model.uce_dim}"
         )
 
     if smiles_embeddings.shape[1] != model.drug_dim:
         raise ValueError(
-            f"❌ 药物指纹维度与模型不一致: "
-            f"fingerprint={smiles_embeddings.shape[1]}, model={model.drug_dim}。"
-            f"请确认 --fp_bits 与训练时一致。"
+            f"❌ The drug fingerprint dimensions do not match the model: "
+            f"fingerprint={smiles_embeddings.shape[1]}, model={model.drug_dim}."
+            f" Ensure --fp_bits matches the training configuration."
         )
-
-    control_raw_df = pd.DataFrame(
-        controls_raw,
-        columns=gene_names,
-        index=control_obs.index.astype(str)
-    )
-    control_raw_df.index.name = "sample_id"
-
-    control_raw_path = os.path.join(
-        out_dir,
-        f"{cell_type}_control_raw_expr.csv"
-    )
-    control_raw_df.to_csv(control_raw_path)
-
-    control_norm_df = pd.DataFrame(
-        controls_norm,
-        columns=gene_names,
-        index=control_obs.index.astype(str)
-    )
-    control_norm_df.index.name = "sample_id"
-
-    control_norm_path = os.path.join(
-        out_dir,
-        f"{cell_type}_control_for_model_expr.csv"
-    )
-    control_norm_df.to_csv(control_norm_path)
 
     perturbed_df, fc_df = predict_mean_profiles(
         model=model,
@@ -1092,43 +1035,27 @@ def run_single_cell_type(
 
     dose_str = str(dose_um).replace(".0", "")
 
-    # pert_path = os.path.join(
-    #     out_dir,
-    #     f"{cell_type}_predicted_perturbed_expr_{dose_str}uM.csv"
-    # )
+    pert_path = os.path.join(
+        out_dir,
+        f"{cell_type}_predicted_perturbed_expr_{dose_str}uM.csv"
+    )
 
     fc_path = os.path.join(
         out_dir,
         f"{cell_type}_predicted_log2FC_{dose_str}uM.csv"
     )
 
-    # perturbed_df.to_csv(pert_path)
+    perturbed_df.to_csv(pert_path)
     fc_df.to_csv(fc_path)
 
     score_col = f"{cell_type}_reverse_score"
 
-    ranked_scores, score_summary_df, up_filtered, down_filtered = score_predicted_drugs_from_fc(
+    ranked_scores, _, _, _ = score_predicted_drugs_from_fc(
         fc_df=fc_df,
         up_genes=up_genes,
         down_genes=down_genes,
         score_col_name=score_col,
     )
-
-    pd.DataFrame({"gene": up_filtered}).to_csv(
-        os.path.join(out_dir, f"{cell_type}_filtered_up_genes_used.csv"),
-        index=False
-    )
-
-    pd.DataFrame({"gene": down_filtered}).to_csv(
-        os.path.join(out_dir, f"{cell_type}_filtered_down_genes_used.csv"),
-        index=False
-    )
-
-    score_summary_path = os.path.join(
-        out_dir,
-        f"{cell_type}_reverse_score_gene_summary_{dose_str}uM.csv"
-    )
-    score_summary_df.to_csv(score_summary_path, index=False)
 
     per_cell_result = valid_meta_df.join(ranked_scores, how="inner")
     per_cell_result = per_cell_result.sort_values(score_col, ascending=True)
@@ -1184,49 +1111,23 @@ def run_merged_cell_types(
 
     if controls_norm.shape[1] != model.gene_size:
         raise ValueError(
-            f"❌ control gene 数与模型不一致: "
-            f"control={controls_norm.shape[1]}, model={model.gene_size}。"
-            f"请确认 --control_path 与训练 checkpoint 时使用的基因集合和顺序一致。"
+            f"❌ The number of control genes does not match the model: "
+            f"control={controls_norm.shape[1]}, model={model.gene_size}."
+            f" Ensure --control_path uses the same genes in the same order as the training checkpoint."
         )
 
     if controls_uce.shape[1] != model.uce_dim:
         raise ValueError(
-            f"❌ control X_uce 维度与模型不一致: "
+            f"❌ The control X_uce dimensions do not match the model: "
             f"control={controls_uce.shape[1]}, model={model.uce_dim}"
         )
 
     if smiles_embeddings.shape[1] != model.drug_dim:
         raise ValueError(
-            f"❌ 药物指纹维度与模型不一致: "
-            f"fingerprint={smiles_embeddings.shape[1]}, model={model.drug_dim}。"
-            f"请确认 --fp_bits 与训练时一致。"
+            f"❌ The drug fingerprint dimensions do not match the model: "
+            f"fingerprint={smiles_embeddings.shape[1]}, model={model.drug_dim}."
+            f" Ensure --fp_bits matches the training configuration."
         )
-
-    control_raw_df = pd.DataFrame(
-        controls_raw,
-        columns=gene_names,
-        index=["merged_mean"]
-    )
-    control_raw_df.index.name = "sample_id"
-
-    control_raw_path = os.path.join(
-        out_dir,
-        f"{label}_control_raw_expr_mean.csv"
-    )
-    control_raw_df.to_csv(control_raw_path)
-
-    control_norm_df = pd.DataFrame(
-        controls_norm,
-        columns=gene_names,
-        index=["merged_mean"]
-    )
-    control_norm_df.index.name = "sample_id"
-
-    control_norm_path = os.path.join(
-        out_dir,
-        f"{label}_control_for_model_expr_mean.csv"
-    )
-    control_norm_df.to_csv(control_norm_path)
 
     perturbed_df, fc_df = predict_mean_profiles(
         model=model,
@@ -1258,28 +1159,12 @@ def run_merged_cell_types(
 
     score_col = f"{label}_reverse_score"
 
-    ranked_scores, score_summary_df, up_filtered, down_filtered = score_predicted_drugs_from_fc(
+    ranked_scores, _, _, _ = score_predicted_drugs_from_fc(
         fc_df=fc_df,
         up_genes=up_genes,
         down_genes=down_genes,
         score_col_name=score_col,
     )
-
-    pd.DataFrame({"gene": up_filtered}).to_csv(
-        os.path.join(out_dir, f"{label}_filtered_up_genes_used.csv"),
-        index=False
-    )
-
-    pd.DataFrame({"gene": down_filtered}).to_csv(
-        os.path.join(out_dir, f"{label}_filtered_down_genes_used.csv"),
-        index=False
-    )
-
-    score_summary_path = os.path.join(
-        out_dir,
-        f"{label}_reverse_score_gene_summary_{dose_str}uM.csv"
-    )
-    score_summary_df.to_csv(score_summary_path, index=False)
 
     merged_result = valid_meta_df.join(ranked_scores, how="inner")
     merged_result = merged_result.sort_values(score_col, ascending=True)
@@ -1297,53 +1182,50 @@ def run_merged_cell_types(
     return merged_result[[score_col]].copy(), label
 
 
-# ===============================
-# 主函数
-# ===============================
 def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
         "--checkpoint_path",
         type=str,
-        default="/data/home/wenjian/药物扰动模型/宇峰师兄数据/生物图全部扰动/训练验证结果/finalmodel_seed3/best_model_final_10uM_celltype_pair.pth"
+        default="checkpoints/best_model_final_10uM_celltype_pair.pth"
     )
 
     parser.add_argument(
         "--control_path",
         type=str,
-        default="/data/home/wenjian/药物扰动模型/宇峰师兄数据/processed/ctl_vehicle_default164_ctrl1.h5ad"
+        default="data/controls/ctl_vehicle_default164_ctrl1.h5ad"
     )
 
     parser.add_argument(
         "--smiles_csv",
         type=str,
-        default="/data/home/wenjian/药物扰动模型/小分子库/topscience/t001/t001.csv"
+        default="data/candidates/t001.csv"
     )
 
     parser.add_argument(
         "--out_dir",
         type=str,
-        default="/data/home/wenjian/药物扰动模型/宇峰师兄数据/生物图全部扰动/药物推荐结果/finalmodel_seed3_结构"
+        default="results/finalmodel_seed3"
     )
 
     parser.add_argument(
         "--cell_types",
         nargs="+",
-        default=["A375", "SKMEL5"]
+        default=["A375"]
     )
 
     parser.add_argument(
         "--merge_cell_types_first",
         action="store_true",
-        help="先合并多个 cell_type 的 control 表达取均值，再进行药物推荐"
+        help="Average control expression across multiple cell_type groups before recommending drugs"
     )
 
     parser.add_argument(
         "--max_control_cells_per_cell_type",
         type=int,
         default=100,
-        help="每个指定 cell_type 最多使用的控制组细胞数量；0 表示使用全部"
+        help="Maximum number of control cells per specified cell_type; 0 uses all cells"
     )
 
     parser.add_argument("--dose_um", type=float, default=10.0)
@@ -1355,35 +1237,39 @@ def main():
     parser.add_argument(
         "--up_genes_path",
         type=str,
-        default="/data/home/wenjian/药物扰动模型/我的数据/melanoma_cancer_up_genes.txt"
+        default="data/gene_sets/melanoma_cancer_up_genes.txt"
     )
 
     parser.add_argument(
         "--down_genes_path",
         type=str,
-        default="/data/home/wenjian/药物扰动模型/我的数据/melanoma_cancer_down_genes.txt"
+        default="data/gene_sets/melanoma_cancer_down_genes.txt"
     )
 
     args = parser.parse_args()
+    for name in (
+        "checkpoint_path", "control_path", "smiles_csv", "out_dir",
+        "up_genes_path", "down_genes_path",
+    ):
+        setattr(args, name, project_path(getattr(args, name)))
 
     if args.max_control_cells_per_cell_type < 0:
-        raise ValueError("❌ --max_control_cells_per_cell_type 必须 >= 0")
+        raise ValueError("❌ --max_control_cells_per_cell_type must be >= 0")
 
     set_seed(args.seed)
     os.makedirs(args.out_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 1. 加载模型
     print("Loading trained model...")
     gene_symbols_for_model = load_control_gene_symbols(args.control_path)
     model, ckpt = load_model(args.checkpoint_path, device, gene_symbols_for_model)
 
     if len(gene_symbols_for_model) != model.gene_size:
         raise ValueError(
-            f"❌ control gene 数与模型不一致: "
-            f"control={len(gene_symbols_for_model)}, model={model.gene_size}。"
-            f"请确认 --control_path 与训练 checkpoint 时使用的基因集合和顺序一致。"
+            f"❌ The number of control genes does not match the model: "
+            f"control={len(gene_symbols_for_model)}, model={model.gene_size}."
+            f" Ensure --control_path uses the same genes in the same order as the training checkpoint."
         )
 
     print(f"Loaded checkpoint from epoch: {ckpt.get('epoch', 'unknown')}")
@@ -1395,11 +1281,10 @@ def main():
     ckpt_dose = ckpt.get("dose_value")
     if ckpt_dose is not None and abs(float(ckpt_dose) - float(args.dose_um)) > 1e-8:
         raise ValueError(
-            f"❌ 预测 dose 与训练 checkpoint 不一致: "
+            f"❌ The prediction dose does not match the training checkpoint: "
             f"checkpoint dose={ckpt_dose}, prediction dose={args.dose_um}"
         )
 
-    # 2. 加载候选药物
     print("\nLoading candidate SMILES...")
     smiles_df = pd.read_csv(args.smiles_csv)
 
@@ -1421,7 +1306,6 @@ def main():
     print(f"Input candidate rows: {len(smiles_list)}")
     print(f"Unique input SMILES: {pd.Series(smiles_list).nunique()}")
 
-    # 3. 构建 FCFP4
     smiles_embeddings, valid_smiles, valid_ids, invalid_smiles, invalid_ids = build_fcfp4_embeddings(
         smiles_list,
         candidate_ids=candidate_ids,
@@ -1437,48 +1321,18 @@ def main():
         valid_meta_df = valid_meta_df.rename(columns={smiles_col: "SMILES"})
     valid_meta_df.index.name = "candidate_id"
 
-    bad_path = os.path.join(args.out_dir, "invalid_smiles.csv")
     if invalid_smiles:
-        pd.DataFrame({
-            "candidate_id": invalid_ids,
-            "invalid_smiles": invalid_smiles,
-        }).to_csv(
-            bad_path,
-            index=False
-        )
+        print(f"Skipped {len(invalid_smiles)} invalid SMILES; only the three result CSV files will be saved.")
 
-    # 4. 加载 melanoma 上下调基因集
     print("\nLoading disease up/down gene sets...")
 
-    up_genes, down_genes, overlap_genes, sig_summary = load_up_down_gene_sets(
+    up_genes, down_genes, _, _ = load_up_down_gene_sets(
         args.up_genes_path,
         args.down_genes_path
     )
 
-    overlap_path = os.path.join(
-        args.out_dir,
-        "up_down_overlap_removed_genes.csv"
-    )
-
-    pd.DataFrame({"overlap_gene": overlap_genes}).to_csv(
-        overlap_path,
-        index=False
-    )
-
-    sig_summary_df = pd.DataFrame([sig_summary])
-    sig_summary_df["dose_um"] = args.dose_um
-
-    sig_summary_path = os.path.join(
-        args.out_dir,
-        "reverse_score_gene_summary_all_cell_types.csv"
-    )
-
-    sig_summary_df.to_csv(sig_summary_path, index=False)
-
-    dose_str = str(args.dose_um).replace(".0", "")
-
     if args.merge_cell_types_first and len(args.cell_types) > 1:
-        merged_scores, merged_label = run_merged_cell_types(
+        run_merged_cell_types(
             model=model,
             control_path=args.control_path,
             cell_types=args.cell_types,
@@ -1494,80 +1348,26 @@ def main():
             max_control_cells_per_cell_type=args.max_control_cells_per_cell_type,
             seed=args.seed,
         )
+    else:
+        for cell_type in args.cell_types:
+            run_single_cell_type(
+                model=model,
+                control_path=args.control_path,
+                cell_type=cell_type,
+                smiles_embeddings=smiles_embeddings,
+                valid_ids=valid_ids,
+                valid_meta_df=valid_meta_df,
+                dose_um=args.dose_um,
+                batch_size=args.batch_size,
+                device=device,
+                up_genes=up_genes,
+                down_genes=down_genes,
+                out_dir=args.out_dir,
+                max_control_cells=args.max_control_cells_per_cell_type,
+                seed=args.seed,
+            )
 
-        final_results = valid_meta_df.join(merged_scores, how="inner")
-        score_col = f"{merged_label}_reverse_score"
-        final_results = final_results.sort_values(score_col, ascending=True).reset_index(drop=True)
-
-        ranked_result_path = os.path.join(
-            args.out_dir,
-            f"{merged_label}_predicted_reverse_scores_{dose_str}uM.csv"
-        )
-
-        final_results.to_csv(ranked_result_path, index=False)
-
-        print("\nDone.")
-        print(f"Saved merged reverse-score ranking to: {ranked_result_path}")
-        print(f"Saved overlap genes to: {overlap_path}")
-        print(f"Saved gene summary to: {sig_summary_path}")
-
-        if invalid_smiles:
-            print(f"Saved invalid SMILES to: {bad_path}")
-
-        return
-
-    # 5. 每个 cell_type 分别推荐
-    all_score_tables = []
-
-    for cell_type in args.cell_types:
-        per_cell_scores = run_single_cell_type(
-            model=model,
-            control_path=args.control_path,
-            cell_type=cell_type,
-            smiles_embeddings=smiles_embeddings,
-            valid_ids=valid_ids,
-            valid_meta_df=valid_meta_df,
-            dose_um=args.dose_um,
-            batch_size=args.batch_size,
-            device=device,
-            up_genes=up_genes,
-            down_genes=down_genes,
-            out_dir=args.out_dir,
-            max_control_cells=args.max_control_cells_per_cell_type,
-            seed=args.seed,
-        )
-
-        all_score_tables.append(per_cell_scores)
-
-    # 6. 合并多个 cell_type 的 reverse score
-    final_results = valid_meta_df.copy()
-
-    for score_df in all_score_tables:
-        final_results = final_results.join(score_df, how="inner")
-
-    score_cols = [f"{ct}_reverse_score" for ct in args.cell_types]
-
-    final_results["mean_reverse_score"] = final_results[score_cols].mean(axis=1)
-
-    final_results = final_results.sort_values(
-        "mean_reverse_score",
-        ascending=True
-    ).reset_index(drop=True)
-
-    ranked_result_path = os.path.join(
-        args.out_dir,
-        f'{"_".join(args.cell_types)}_predicted_reverse_scores_{dose_str}uM.csv'
-    )
-
-    final_results.to_csv(ranked_result_path, index=False)
-
-    print("\nDone.")
-    print(f"Saved combined reverse-score ranking to: {ranked_result_path}")
-    print(f"Saved overlap genes to: {overlap_path}")
-    print(f"Saved gene summary to: {sig_summary_path}")
-
-    if invalid_smiles:
-        print(f"Saved invalid SMILES to: {bad_path}")
+    print("\nDone. Saved predicted expression, mean log2FC and reverse-score ranking.")
 
 
 if __name__ == "__main__":
