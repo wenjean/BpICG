@@ -34,6 +34,5 @@ python dose_response_evaluation/train_eval_multidose.py --epochs 200
 python drug_recommendation/recommend_drugs.py --cell_types A375 --dose_um 10
 ```
 
-The training examples use the manuscript's 200 epochs; the scripts default to 50. Use `--help` to view all options. Input and output paths are resolved relative to each script's directory.
 
 Training saves checkpoints, data splits, and Pearson correlation, R², and MSE metrics. Recommendation saves predicted expression, log2 fold changes, and compound rankings. **Lower reversal scores indicate stronger predicted disease-signature reversal.**
