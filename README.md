@@ -22,7 +22,7 @@ Use **Python 3.10**. From the repository root, install the shared dependencies:
 python -m pip install -r model_training_evaluation/requirements.txt
 ```
 
-Processed data and pretrained weights will be released through **Zenodo**; the download link is pending. Place the required files at the relative paths recorded in each workflow's `data_manifest.json`. Keep each script with its accompanying model and helper files.
+Processed data and pretrained model weights are available on Zenodo(https://doi.org/10.5281/zenodo.23589950) and Google Drive(https://drive.google.com/file/d/1HrHrnIEB-Jh12XyBT-E6WwVrT3rfYnsm/view?usp=drive_link). Place the required files at the relative paths specified in each workflow’s data_manifest.json, and keep each script together with its accompanying model and helper files.
 
 ## Usage
 
