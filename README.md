@@ -29,9 +29,9 @@ Processed data and pretrained model weights are available on Zenodo(https://doi.
 Run from the repository root after preparing the data:
 
 ```bash
-python model_training_evaluation/train_eval_drugs.py --epochs 200
-python dose_response_evaluation/train_eval_multidose.py --epochs 200
-python drug_recommendation/recommend_drugs.py --cell_types A375 --dose_um 10
+python model_training_evaluation/train_eval_drugs.py 
+python dose_response_evaluation/train_eval_multidose.py 
+python drug_recommendation/recommend_drugs.py --cell_types A375 
 ```
 
 
